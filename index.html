@@ -1276,21 +1276,46 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     [/asimismo,?\s*/gi, rotatingReplacer(['Además, ', 'De hecho, ', 'Con todo, ', 'En ese sentido, '])]
   ];
 
-  function applyRulesChecklist(text, instanceCounterObj, appliedRuleSet){
+  /* ---------- rewriteAcademicText(): bucle de auditoría autónoma ----------
+     Ejecuta un ciclo while que reescanea el texto tras cada pasada: elimina
+     muletillas de IA (checklist de 25 reglas) e inyecta léxico académico de
+     nivel posgrado. Se repite de forma autónoma hasta que una pasada completa
+     no detecte NINGUNA violación de patrón, con un tope de seguridad de 5
+     pasadas para garantizar que el bucle siempre termine. */
+  const MAX_AUDIT_PASSES = 5;
+
+  function rewriteAcademicText(text, instanceCounterObj, appliedRuleSet, lexCounterObj){
     let out = text;
-    RULES_CHECKLIST.forEach((rule, idx) => {
-      out = out.replace(rule.regex, (...args) => {
-        instanceCounterObj.count++;
-        appliedRuleSet.add(idx);
-        return typeof rule.replace === 'function' ? rule.replace(...args) : rule.replace;
+    let pass = 0;
+    let violationFound = true;
+
+    while(violationFound && pass < MAX_AUDIT_PASSES){
+      violationFound = false;
+
+      // Auditoría 1: muletillas de IA prohibidas (checklist de 25 reglas)
+      RULES_CHECKLIST.forEach((rule, idx) => {
+        out = out.replace(rule.regex, (...args) => {
+          violationFound = true;
+          instanceCounterObj.count++;
+          appliedRuleSet.add(idx);
+          return typeof rule.replace === 'function' ? rule.replace(...args) : rule.replace;
+        });
       });
-    });
+
+      // Auditoría 2: inyección de léxico académico de nivel posgrado
+      out = elevateLexicon(out, lexCounterObj);
+
+      pass++;
+    }
+
+    // Reglas adicionales de calidad (fuera del checklist oficial de 25): una sola pasada.
     EXTRA_RULES.forEach(([regex, replacement]) => {
       out = out.replace(regex, () => {
         instanceCounterObj.count++;
         return typeof replacement === 'function' ? replacement() : replacement;
       });
     });
+
     out = out.replace(/\s{2,}/g, ' ').replace(/\s+([,.;])/g, '$1').trim();
     return out;
   }
@@ -1456,8 +1481,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     const appliedRuleSet = new Set();
     const rawParagraphs = rawText.split(/\n\s*\n+/).map(p => p.trim()).filter(Boolean);
     const paraList = (rawParagraphs.length ? rawParagraphs : [rawText]).map(p => {
-      const cleaned = applyRulesChecklist(p, fillerCounter, appliedRuleSet);
-      const elevated = elevateLexicon(cleaned, lexCounter);
+      const elevated = rewriteAcademicText(p, fillerCounter, appliedRuleSet, lexCounter);
       const sentencesStr = splitSentences(elevated).map(capitalizeSentence);
       const withSplits = splitLongSentences(sentencesStr, splitCounter);
       return mergeShortSentences(withSplits, mergeCounter);
@@ -1495,6 +1519,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
       const annChunks = [];
       const cleanChunks = [];
       const plainChunks = [];
+      const usedConnectorsInParagraph = new Set(); // auditoría: evita repetir el mismo conector dentro de un párrafo
 
       sentArr.forEach(sentenceObj => {
         let text = sentenceObj.text;
@@ -1502,8 +1527,16 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
         let connectorAdded = false;
 
         if(!isCompound && globalIdx > 0 && Math.random() < 0.4 && text.length > 20 && !ALREADY_HAS_CONNECTOR.test(text.trim())){
-          const connector = CONNECTORS[connectorUseIdx % CONNECTORS.length];
+          let connector = CONNECTORS[connectorUseIdx % CONNECTORS.length];
           connectorUseIdx++;
+          // Auditoría de conectores repetidos: si ya se usó en este párrafo, se prueba con el siguiente del pool
+          let attempts = 0;
+          while(usedConnectorsInParagraph.has(connector) && attempts < CONNECTORS.length){
+            connector = CONNECTORS[connectorUseIdx % CONNECTORS.length];
+            connectorUseIdx++;
+            attempts++;
+          }
+          usedConnectorsInParagraph.add(connector);
           text = connector + ' ' + lowerFirst(text);
           connectorAdded = true;
         }
