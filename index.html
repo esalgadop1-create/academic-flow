@@ -676,7 +676,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 2l-7 20-4-9-9-4 20-7z" stroke="white" stroke-width="1.8" stroke-linejoin="round"/></svg>
         Enviar Sugerencia
       </button>
-      <p class="text-[11px] text-center text-slate-300 mt-3">Se abrirá WhatsApp con tu mensaje ya redactado.</p>
+      <p class="text-[11px] text-center text-slate-300 mt-3">Se abrirá tu cliente de correo con el mensaje ya redactado.</p>
     </div>
   </div>
 
@@ -1077,7 +1077,9 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     const barColor = overLimit ? '#fbbf24' : '#818cf8';
     $('draftLimitBar').style.width = pct + '%';
     $('draftLimitBar').style.background = barColor;
-    $('draftLimitNote').classList.toggle('hidden', !overLimit);
+    // Los usuarios Pro nunca ven la alerta de límite del plan gratuito, ni siquiera
+    // mientras siguen escribiendo (antes solo se ocultaba una vez, al activar Pro).
+    $('draftLimitNote').classList.toggle('hidden', !overLimit || isProActive);
   }
   draftInput.addEventListener('input', updateDraftStats);
   updateDraftStats();
@@ -1276,6 +1278,47 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     [/asimismo,?\s*/gi, rotatingReplacer(['Además, ', 'De hecho, ', 'Con todo, ', 'En ese sentido, '])]
   ];
 
+  /* ---------- Detección automática de idioma (Bloque A) ---------- */
+  function detectLanguage(text){
+    const englishWords = /\b(the|and|is|in|it|you|that|was|for|on|are|with|as|I|his|they|be|at|one|have|this|from|or|had|by|not|word|but|what|some|we|can|out|other|were|all|there|when|up|use|your|how|said|an|each|she)\b/gi;
+    const matches = text.match(englishWords);
+    const count = matches ? matches.length : 0;
+    const totalWords = text.trim().split(/\s+/).filter(Boolean).length || 1;
+    return (count / totalWords) > 0.1 ? 'en' : 'es';
+  }
+
+  /* ---------- Checklist de reglas académicas — INGLÉS (Bloque A adaptado) ---------- */
+  const RULES_CHECKLIST_EN = [
+    { name: 'Remove "It is important to note"', regex: /it is important to note( that)?\s*/gi, replace: '' },
+    { name: 'Remove "It should be highlighted"', regex: /it should be highlighted( that)?\s*/gi, replace: '' },
+    { name: 'Remove "In conclusion"', regex: /in conclusion,?\s*/gi, replace: '' },
+    { name: 'Remove "In summary"', regex: /in summary,?\s*/gi, replace: '' },
+    { name: 'Remove "Basically"', regex: /\bbasically( speaking)?\b,?\s*/gi, replace: '' },
+    { name: 'Remove "Clearly"', regex: /\bclearly\b,?\s*/gi, replace: '' },
+    { name: 'Remove "Obviously"', regex: /\bobviously\b,?\s*/gi, replace: '' }
+  ];
+
+  const LEXICON_EN = [
+    [/\bfurthermore\b/gi, 'moreover'],
+    [/\balso\b/gi, 'additionally'],
+    [/\bhowever\b/gi, 'nevertheless'],
+    [/\bimportant\b/gi, 'crucial'],
+    [/\bshows\b/gi, 'demonstrates']
+  ];
+
+  function elevateLexiconEN(text, counterObj){
+    let out = text;
+    LEXICON_EN.forEach(([regex, replacement]) => {
+      out = out.replace(regex, (match) => {
+        counterObj.count++;
+        return match.charAt(0) === match.charAt(0).toUpperCase()
+          ? replacement.charAt(0).toUpperCase() + replacement.slice(1)
+          : replacement;
+      });
+    });
+    return out;
+  }
+
   /* ---------- rewriteAcademicText(): bucle de auditoría autónoma ----------
      Ejecuta un ciclo while que reescanea el texto tras cada pasada: elimina
      muletillas de IA (checklist de 25 reglas) e inyecta léxico académico de
@@ -1284,16 +1327,17 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
      pasadas para garantizar que el bucle siempre termine. */
   const MAX_AUDIT_PASSES = 5;
 
-  function rewriteAcademicText(text, instanceCounterObj, appliedRuleSet, lexCounterObj){
+  function rewriteAcademicText(text, instanceCounterObj, appliedRuleSet, lexCounterObj, lang){
     let out = text;
     let pass = 0;
     let violationFound = true;
+    const checklist = lang === 'en' ? RULES_CHECKLIST_EN : RULES_CHECKLIST;
 
     while(violationFound && pass < MAX_AUDIT_PASSES){
       violationFound = false;
 
-      // Auditoría 1: muletillas de IA prohibidas (checklist de 25 reglas)
-      RULES_CHECKLIST.forEach((rule, idx) => {
+      // Auditoría 1: muletillas de IA prohibidas (checklist según idioma detectado)
+      checklist.forEach((rule, idx) => {
         out = out.replace(rule.regex, (...args) => {
           violationFound = true;
           instanceCounterObj.count++;
@@ -1302,19 +1346,22 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
         });
       });
 
-      // Auditoría 2: inyección de léxico académico de nivel posgrado
-      out = elevateLexicon(out, lexCounterObj);
+      // Auditoría 2: inyección de léxico académico de nivel posgrado (según idioma)
+      out = lang === 'en' ? elevateLexiconEN(out, lexCounterObj) : elevateLexicon(out, lexCounterObj);
 
       pass++;
     }
 
-    // Reglas adicionales de calidad (fuera del checklist oficial de 25): una sola pasada.
-    EXTRA_RULES.forEach(([regex, replacement]) => {
-      out = out.replace(regex, () => {
-        instanceCounterObj.count++;
-        return typeof replacement === 'function' ? replacement() : replacement;
+    // Reglas adicionales de calidad en español (fuera del checklist oficial de 25):
+    // no tienen equivalente solicitado en inglés, así que solo se aplican en 'es'.
+    if(lang !== 'en'){
+      EXTRA_RULES.forEach(([regex, replacement]) => {
+        out = out.replace(regex, () => {
+          instanceCounterObj.count++;
+          return typeof replacement === 'function' ? replacement() : replacement;
+        });
       });
-    });
+    }
 
     out = out.replace(/\s{2,}/g, ' ').replace(/\s+([,.;])/g, '$1').trim();
     return out;
@@ -1333,14 +1380,17 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
   }
 
   const CONNECTORS = ['Además,', 'No obstante,', 'En este sentido,', 'De igual forma,', 'Por consiguiente,', 'En contraste,', 'Con todo,', 'A partir de ello,'];
+  const CONNECTORS_EN = ['Moreover,', 'Nevertheless,', 'In this regard,', 'Consequently,', 'By contrast,', 'Even so,', 'In fact,', 'Building on this,'];
   const CITATION_PATTERN = /\(\s*[A-ZÁÉÍÓÚÑ][\wá-úÁ-Ú]*.*?,?\s*\d{4}\s*\)|\[\d+\]/;
 
   /* ---------- División de oraciones largas (aumenta el 'burstiness': mezcla
      oraciones cortas y directas con oraciones complejas) ---------- */
-  function splitLongSentences(sentences, counterObj){
+  function splitLongSentences(sentences, counterObj, lang){
     const out = [];
-    const BAD_CONTINUATION = /^(que|quien|quienes|el cual|la cual|los cuales|donde|cuyo|cuya)\b/i;
-    const GERUND_START = /^\w+(ando|iendo)\b/i;
+    const BAD_CONTINUATION = lang === 'en'
+      ? /^(that|which|who|whom|whose|where)\b/i
+      : /^(que|quien|quienes|el cual|la cual|los cuales|donde|cuyo|cuya)\b/i;
+    const GERUND_START = lang === 'en' ? /^\w+ing\b/i : /^\w+(ando|iendo)\b/i;
 
     sentences.forEach(s => {
       const wordCount = s.split(/\s+/).filter(Boolean).length;
@@ -1421,8 +1471,10 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
 
   /* ---------- Fusión de oraciones breves en oraciones compuestas ---------- */
   const MERGE_CONNECTORS = ['ya que', 'debido a que', 'mientras que', 'por lo cual', 'en tanto que'];
+  const MERGE_CONNECTORS_EN = ['since', 'given that', 'while', 'thus', 'in that'];
 
-  function mergeShortSentences(sentences, counterObj){
+  function mergeShortSentences(sentences, counterObj, lang){
+    const pool = lang === 'en' ? MERGE_CONNECTORS_EN : MERGE_CONNECTORS;
     const out = [];
     let mergeIdx = 0;
     let i = 0;
@@ -1432,7 +1484,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
       const currWords = current.split(/\s+/).filter(Boolean).length;
       const nextWords = next ? next.split(/\s+/).filter(Boolean).length : 999;
       if(next && currWords <= 10 && nextWords <= 10){
-        const connector = MERGE_CONNECTORS[mergeIdx % MERGE_CONNECTORS.length];
+        const connector = pool[mergeIdx % pool.length];
         mergeIdx++;
         counterObj.count++;
         const firstPart = current.replace(/[.!?]+\s*$/, '');
@@ -1463,10 +1515,26 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     advice: (style) => `Añade una referencia bibliográfica en formato ${style} que respalde directamente esta idea.`
   };
 
-  function detectCategory(sentence){
+  const CATEGORIES_EN = [
+    { name: 'Statistic without statistical support', triggers: ['data','figures','percentage','statistic','statistics'],
+      advice: (style) => `Add the specific statistical source (institutional report, official database, or dated study) in ${style} format that supports this figure.` },
+    { name: 'Causal relationship without evidence', triggers: ['impact','consequence','causes','generates','affects','effect'],
+      advice: (style) => `Cite an empirical study or meta-analysis (${style} format) that confirms this causal relationship, avoiding overgeneralization.` },
+    { name: 'Conclusive claim without citation', triggers: ['demonstrates','proves','confirms','reveals'],
+      advice: (style) => `Reference the specific study or experiment (author, year, ${style} format) that supports this conclusion.` },
+    { name: 'Generic reference without concrete source', triggers: ['studies','research','according to','indicates','indicate'],
+      advice: (style) => `Specify the exact author and year in ${style} format, instead of a generic allusion to "studies" or "research".` }
+  ];
+  const FALLBACK_CATEGORY_EN = {
+    name: 'Argument without explicit support',
+    advice: (style) => `Add a bibliographic reference in ${style} format that directly supports this idea.`
+  };
+
+  function detectCategory(sentence, lang){
     if(CITATION_PATTERN.test(sentence)) return null;
     const lower = sentence.toLowerCase();
-    for(const cat of CATEGORIES){
+    const pool = lang === 'en' ? CATEGORIES_EN : CATEGORIES;
+    for(const cat of pool){
       if(cat.triggers.some(t => lower.includes(t))) return cat;
     }
     return null;
@@ -1474,6 +1542,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
 
   /* ---------- Transformación principal (texto completo, sin resumir) ---------- */
   function transformDraft(rawText, citationStyle){
+    const lang = detectLanguage(rawText);
     const fillerCounter = { count: 0 };
     const lexCounter = { count: 0 };
     const mergeCounter = { count: 0 };
@@ -1481,28 +1550,29 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     const appliedRuleSet = new Set();
     const rawParagraphs = rawText.split(/\n\s*\n+/).map(p => p.trim()).filter(Boolean);
     const paraList = (rawParagraphs.length ? rawParagraphs : [rawText]).map(p => {
-      const elevated = rewriteAcademicText(p, fillerCounter, appliedRuleSet, lexCounter);
+      const elevated = rewriteAcademicText(p, fillerCounter, appliedRuleSet, lexCounter, lang);
       const sentencesStr = splitSentences(elevated).map(capitalizeSentence);
-      const withSplits = splitLongSentences(sentencesStr, splitCounter);
-      return mergeShortSentences(withSplits, mergeCounter);
+      const withSplits = splitLongSentences(sentencesStr, splitCounter, lang);
+      return mergeShortSentences(withSplits, mergeCounter, lang);
     }).filter(arr => arr.length > 0);
 
     const allSentences = paraList.flat();
     const N = allSentences.length;
 
-    let sentenceCats = allSentences.map(s => detectCategory(s.text));
+    let sentenceCats = allSentences.map(s => detectCategory(s.text, lang));
     let flaggedIdx = sentenceCats.map((c, i) => c ? i : -1).filter(i => i >= 0);
+    const fallbackCategory = lang === 'en' ? FALLBACK_CATEGORY_EN : FALLBACK_CATEGORY;
 
     if(flaggedIdx.length < 2 && N >= 2){
       const candidates = [Math.floor(N / 3), Math.min(N - 1, Math.floor((2 * N) / 3))];
       candidates.forEach(idx => {
         if(!flaggedIdx.includes(idx)){
-          sentenceCats[idx] = FALLBACK_CATEGORY;
+          sentenceCats[idx] = fallbackCategory;
           flaggedIdx.push(idx);
         }
       });
     } else if(N === 1){
-      sentenceCats[0] = sentenceCats[0] || FALLBACK_CATEGORY;
+      sentenceCats[0] = sentenceCats[0] || fallbackCategory;
       flaggedIdx = [0];
     }
 
@@ -1513,7 +1583,10 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     const annotatedParas = [];
     const cleanParas = [];
     const plainParas = [];
-    const ALREADY_HAS_CONNECTOR = /^(sin embargo|no obstante|por (lo tanto|consiguiente)|además|asimismo|en (cambio|contraste|consecuencia|este sentido|definitiva|síntesis)|aun así|con todo|de hecho|por otro lado|actualmente|de igual forma|a partir de ello|para cerrar|como síntesis|finalmente|en última instancia|este apartado)\b/i;
+    const connectorPool = lang === 'en' ? CONNECTORS_EN : CONNECTORS;
+    const ALREADY_HAS_CONNECTOR = lang === 'en'
+      ? /^(however|nevertheless|therefore|moreover|furthermore|in (contrast|consequence|this regard)|even so|in fact|on the other hand|currently|likewise|building on this)\b/i
+      : /^(sin embargo|no obstante|por (lo tanto|consiguiente)|además|asimismo|en (cambio|contraste|consecuencia|este sentido|definitiva|síntesis)|aun así|con todo|de hecho|por otro lado|actualmente|de igual forma|a partir de ello|para cerrar|como síntesis|finalmente|en última instancia|este apartado)\b/i;
 
     paraList.forEach((sentArr, pIdx) => {
       const annChunks = [];
@@ -1527,12 +1600,12 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
         let connectorAdded = false;
 
         if(!isCompound && globalIdx > 0 && Math.random() < 0.4 && text.length > 20 && !ALREADY_HAS_CONNECTOR.test(text.trim())){
-          let connector = CONNECTORS[connectorUseIdx % CONNECTORS.length];
+          let connector = connectorPool[connectorUseIdx % connectorPool.length];
           connectorUseIdx++;
           // Auditoría de conectores repetidos: si ya se usó en este párrafo, se prueba con el siguiente del pool
           let attempts = 0;
-          while(usedConnectorsInParagraph.has(connector) && attempts < CONNECTORS.length){
-            connector = CONNECTORS[connectorUseIdx % CONNECTORS.length];
+          while(usedConnectorsInParagraph.has(connector) && attempts < connectorPool.length){
+            connector = connectorPool[connectorUseIdx % connectorPool.length];
             connectorUseIdx++;
             attempts++;
           }
@@ -1589,12 +1662,14 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
 
     // Grupo 5 del checklist — Variabilidad y ritmo: cuenta como regla "aplicada" si hubo
     // fusión, división o inserción de conectores para romper la simetría de longitud.
+    const checklistLength = lang === 'en' ? RULES_CHECKLIST_EN.length : RULES_CHECKLIST.length;
     const structuralVariabilityApplied = (mergeCounter.count > 0 || splitCounter.count > 0 || connectorUseIdx > 0);
-    if(structuralVariabilityApplied) appliedRuleSet.add(RULES_CHECKLIST.length);
+    if(structuralVariabilityApplied) appliedRuleSet.add(checklistLength);
     const rulesApplied = appliedRuleSet.size;
-    const rulesTotal = RULES_CHECKLIST.length + 1; // 24 basadas en texto + 1 estructural = 25
+    const rulesTotal = checklistLength + 1; // reglas basadas en texto (según idioma) + 1 estructural
 
     return {
+      lang,
       annotatedHtml: annotatedParas.join(''),
       cleanHtml: cleanParas.join(''),
       plainText: plainParas.join('\n\n'),
@@ -1612,21 +1687,24 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
   }
 
   /* ---------- Estimación de una línea base "antes" a partir del borrador original ---------- */
-  function countFillerMatches(text){
+  function countFillerMatches(text, lang){
     let count = 0;
-    RULES_CHECKLIST.forEach(rule => {
+    const checklist = lang === 'en' ? RULES_CHECKLIST_EN : RULES_CHECKLIST;
+    checklist.forEach(rule => {
       const matches = text.match(rule.regex);
       if(matches) count += matches.length;
     });
-    EXTRA_RULES.forEach(([regex]) => {
-      const matches = text.match(regex);
-      if(matches) count += matches.length;
-    });
+    if(lang !== 'en'){
+      EXTRA_RULES.forEach(([regex]) => {
+        const matches = text.match(regex);
+        if(matches) count += matches.length;
+      });
+    }
     return count;
   }
 
-  function estimateBeforeMetrics(rawText){
-    const rawFillerHits = countFillerMatches(rawText);
+  function estimateBeforeMetrics(rawText, lang){
+    const rawFillerHits = countFillerMatches(rawText, lang);
     const rawSentenceWordCounts = splitSentences(rawText).map(s => s.split(/\s+/).filter(Boolean).length);
     const tone = clamp(62 - rawFillerHits * 3, 35, 62);
     const variability = clamp(Math.round(stdDev(rawSentenceWordCounts) * 13 + 12), 10, 60);
@@ -1675,23 +1753,38 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
      ilustrativa de calidad de edición (basada en el checklist de 25 reglas y en
      la estructura real del texto), no una garantía de indetectabilidad frente a
      ninguna herramienta externa. */
-  function classifyAiRisk(score){
+  function classifyAiRisk(score, lang){
+    if(lang === 'en'){
+      if(score <= 10) return { tag: 'Human Tone', tier: 'verified' };
+      if(score <= 30) return { tag: 'Low', tier: 'low' };
+      if(score <= 60) return { tag: 'Moderate', tier: 'moderate' };
+      return { tag: 'High', tier: 'high' };
+    }
     if(score <= 10) return { tag: 'Tono Humano', tier: 'verified' };
     if(score <= 30) return { tag: 'Bajos', tier: 'low' };
     if(score <= 60) return { tag: 'Moderados', tier: 'moderate' };
     return { tag: 'Elevados', tier: 'high' };
   }
 
-  function renderImpactCards(beforeScore, afterScore, rulesApplied, rulesTotal){
-    const beforeInfo = classifyAiRisk(beforeScore);
-    $('cardInitialText').textContent = `Patrones Mecánicos Detectados: ${beforeInfo.tag} (~${beforeScore}%)`;
+  function renderImpactCards(beforeScore, afterScore, rulesApplied, rulesTotal, lang){
+    const beforeInfo = classifyAiRisk(beforeScore, lang);
+    const afterInfo = classifyAiRisk(afterScore, lang);
 
-    const afterInfo = classifyAiRisk(afterScore);
+    if(lang === 'en'){
+      $('cardInitialText').textContent = `Mechanical Patterns Detected: ${beforeInfo.tag} (~${beforeScore}%)`;
+      const afterTextEN = afterInfo.tier === 'verified'
+        ? `Optimized Style: < ${Math.max(1, afterScore)}% AI Patterns (Human Tone)`
+        : `Optimized Style: ${afterScore}% AI Patterns (${afterInfo.tag})`;
+      $('cardOptimizedText').textContent = afterTextEN;
+      $('cardAcademicText').textContent = `Academic Checklist: ${rulesApplied}/${rulesTotal} Rules Applied`;
+      return;
+    }
+
+    $('cardInitialText').textContent = `Patrones Mecánicos Detectados: ${beforeInfo.tag} (~${beforeScore}%)`;
     const afterText = afterInfo.tier === 'verified'
       ? `Estilo Optimizado: < ${Math.max(1, afterScore)}% Patrones IA (Tono Humano)`
       : `Estilo Optimizado: ${afterScore}% Patrones IA (${afterInfo.tag})`;
     $('cardOptimizedText').textContent = afterText;
-
     $('cardAcademicText').textContent = `Checklist Académica: ${rulesApplied}/${rulesTotal} Reglas Aplicadas`;
   }
 
@@ -1811,10 +1904,16 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
   });
 
   /* ---------- Análisis Crítico (acordeón) ---------- */
-  function renderAnalysis(suggestions, citationStyle, rigorLevel){
-    $('analysisSummary').textContent = suggestions.length
-      ? `Se identificaron ${suggestions.length} afirmación(es) que requieren refuerzo bibliográfico en formato ${citationStyle}, acorde a un nivel de ${rigorLevel}.`
-      : 'No se detectaron vacíos evidentes de sustento en este borrador.';
+  function renderAnalysis(suggestions, citationStyle, rigorLevel, lang){
+    if(lang === 'en'){
+      $('analysisSummary').textContent = suggestions.length
+        ? `${suggestions.length} statement(s) were identified that require bibliographic reinforcement in ${citationStyle} format, appropriate for a ${rigorLevel} level.`
+        : 'No evident gaps in supporting evidence were detected in this draft.';
+    } else {
+      $('analysisSummary').textContent = suggestions.length
+        ? `Se identificaron ${suggestions.length} afirmación(es) que requieren refuerzo bibliográfico en formato ${citationStyle}, acorde a un nivel de ${rigorLevel}.`
+        : 'No se detectaron vacíos evidentes de sustento en este borrador.';
+    }
     $('btnToggleAllAnalysis').classList.toggle('hidden', suggestions.length === 0);
     $('btnToggleAllAnalysis').dataset.state = 'collapsed';
     $('btnToggleAllAnalysisLabel').textContent = 'Expandir todo';
@@ -1926,13 +2025,13 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
 
     $('panel-annotated').innerHTML = result.annotatedHtml;
     $('panel-clean').innerHTML = result.cleanHtml;
-    renderAnalysis(result.suggestions, citationStyle, rigorLevel);
+    renderAnalysis(result.suggestions, citationStyle, rigorLevel, result.lang);
     renderParaNav(result.paragraphCount);
 
     const afterMetrics = computeMetrics(result);
-    const beforeMetrics = estimateBeforeMetrics(rawDraft);
+    const beforeMetrics = estimateBeforeMetrics(rawDraft, result.lang);
     renderMetrics(afterMetrics, beforeMetrics);
-    renderImpactCards(beforeMetrics.aiDetection, afterMetrics.aiDetection, result.rulesApplied, result.rulesTotal);
+    renderImpactCards(beforeMetrics.aiDetection, afterMetrics.aiDetection, result.rulesApplied, result.rulesTotal, result.lang);
 
     const structureHits = result.mergeHits + result.splitHits;
     $('sumFillers').textContent = result.fillerHits;
@@ -2241,11 +2340,12 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
       $('feedbackError').classList.remove('hidden');
       return;
     }
-    const message = `Hola, tengo una sugerencia para Academic Flow: ${comment}`;
-    const url = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+    const emailRecipient = 'soporte.appsolutions@gmail.com';
+    const subject = encodeURIComponent('Sugerencia / Feedback - Academic Flow');
+    const body = encodeURIComponent(`Hola equipo de Academic Flow,\n\nTengo la siguiente sugerencia:\n\n${comment}`);
+    window.location.href = `mailto:${emailRecipient}?subject=${subject}&body=${body}`;
     closeFeedbackModal();
-    showToast('¡Gracias por tu sugerencia! Te llevamos a WhatsApp para enviarla.', 'success');
+    showToast('¡Gracias por tu sugerencia! Se abrió tu cliente de correo.', 'success');
   });
 
   /* ---------- Inicialización del estado Pro (al final: depende de funciones/valores
