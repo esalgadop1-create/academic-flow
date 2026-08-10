@@ -775,7 +775,11 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     activeLicenseKey: 'academicFlowActiveLicenseKey',
     deviceFingerprint: 'academicFlowDeviceFingerprint'
   };
-  const PRO_ACTIVATION_CODE = 'ACADEMIC2026'; // código maestro interno para soporte/activación manual
+  // NOTA: se eliminó el código maestro universal ("ACADEMIC2026"). Para otorgar
+  // licencias manualmente (soporte, cortesías, pruebas) usa el Panel Secreto de
+  // Administrador: 3 clics en el logo (o Ctrl+Shift+A) → contraseña → correo del
+  // cliente → "Generar Licencia Pro". Cada licencia generada así queda ligada a un
+  // correo específico y es rastreable, a diferencia de una llave universal.
   const LICENSE_SECRET_FACTOR = 7; // "factor secreto" — ver nota de seguridad más abajo
   const PRO_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
   let isProActive = false;
@@ -925,15 +929,21 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     }
   }
 
-  /* ---------- Auto-activación por parámetro en la URL (?status=success o ?plan=pro) ---------- */
+  /* ---------- Auto-activación por parámetro en la URL de retorno de pago ----------
+     Antes aceptaba las palabras adivinables "status=success" o "plan=pro" — cualquiera
+     podía escribir esa URL directamente y activar Pro gratis, sin pagar. Ahora exige
+     un token largo y aleatorio como parámetro "ref". Debes configurar este mismo valor
+     como la URL de retorno ("Return URL") en la configuración de tu enlace de pago de
+     PayPal, para que solo quien complete el pago llegue con el parámetro correcto. */
+  const PAYMENT_RETURN_TOKEN = 'af-7zq114c52ifb53el';
+
   function checkUrlActivation(){
     const params = new URLSearchParams(window.location.search);
-    if(params.get('status') === 'success' || params.get('plan') === 'pro'){
+    if(params.get('ref') === PAYMENT_RETURN_TOKEN){
       activatePro();
       showToast('¡Plan Pro Activado por 30 días!', 'success');
 
-      params.delete('status');
-      params.delete('plan');
+      params.delete('ref');
       const remaining = params.toString();
       const cleanUrl = window.location.pathname + (remaining ? '?' + remaining : '') + window.location.hash;
       window.history.replaceState({}, document.title, cleanUrl);
@@ -981,10 +991,9 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
       return;
     }
 
-    const isMasterCode = entered === PRO_ACTIVATION_CODE;
     const isEmailBoundCode = licenseMatchesEmail(email, entered);
 
-    if(!isMasterCode && !isEmailBoundCode){
+    if(!isEmailBoundCode){
       showLicenseError('Código inválido para ese correo. Verifica ambos datos.');
       return;
     }
@@ -1006,7 +1015,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
   $('licenseEmailInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') validateCode(); });
 
   /* ---------- Panel secreto de administrador (generación de licencias) ---------- */
-  const ADMIN_PASSWORD = 'ADMIN2026';
+  const ADMIN_PASSWORD = 'Flow-F87BF5-Adm'; // cámbiala por una de tu elección cuando quieras: es este único valor
   const adminModal = $('adminModal');
 
   function openAdminModal(){
@@ -2105,9 +2114,42 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     $('resultStatus').textContent = 'Listo';
   }
 
-  /* ---------- Intentos gratuitos diarios ---------- */
+  /* ---------- Intentos gratuitos diarios (persistidos, con reinicio automático por fecha) ----------
+     Antes este contador vivía solo en memoria (variable JS): recargar la página lo
+     reiniciaba a 3/3 sin ningún control. Ahora se guarda en localStorage junto con
+     la fecha, y solo se reinicia cuando efectivamente cambia el día. */
   const FREE_ATTEMPTS_TOTAL = 3;
-  let freeAttemptsRemaining = FREE_ATTEMPTS_TOTAL;
+  const DAILY_ATTEMPTS_KEY = 'academicFlowDailyAttempts';
+
+  function getTodayDateString(){
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function loadDailyAttempts(){
+    const ls = safeLocalStorage();
+    const today = getTodayDateString();
+    if(!ls) return FREE_ATTEMPTS_TOTAL; // sin almacenamiento disponible: se degrada al comportamiento por sesión
+    try {
+      const raw = ls.getItem(DAILY_ATTEMPTS_KEY);
+      if(raw){
+        const parsed = JSON.parse(raw);
+        if(parsed && parsed.date === today && typeof parsed.remaining === 'number'){
+          return Math.max(0, parsed.remaining);
+        }
+      }
+    } catch(err){ /* registro corrupto o inaccesible: se reinicia abajo */ }
+    ls.setItem(DAILY_ATTEMPTS_KEY, JSON.stringify({ date: today, remaining: FREE_ATTEMPTS_TOTAL }));
+    return FREE_ATTEMPTS_TOTAL;
+  }
+
+  function saveDailyAttempts(remaining){
+    const ls = safeLocalStorage();
+    if(!ls) return;
+    ls.setItem(DAILY_ATTEMPTS_KEY, JSON.stringify({ date: getTodayDateString(), remaining }));
+  }
+
+  let freeAttemptsRemaining = loadDailyAttempts();
   function updateAttemptsLabel(){
     $('attemptsRemainingLabel').textContent = Math.max(0, freeAttemptsRemaining) + ' de ' + FREE_ATTEMPTS_TOTAL;
   }
@@ -2158,6 +2200,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
       let attemptsNote = 'Plan Pro: sin límite de intentos';
       if(!isProActive){
         freeAttemptsRemaining--;
+        saveDailyAttempts(freeAttemptsRemaining);
         updateAttemptsLabel();
         attemptsNote = `Intentos restantes: ${Math.max(0, freeAttemptsRemaining)}`;
       }
