@@ -1224,7 +1224,17 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     // mientras siguen escribiendo (antes solo se ocultaba una vez, al activar Pro).
     $('draftLimitNote').classList.toggle('hidden', !overLimit || isProActive);
   }
-  draftInput.addEventListener('input', updateDraftStats);
+  // El evento 'input' se dispara en cada tecla o al pegar texto. Con documentos muy
+  // grandes pegados de una vez (miles de palabras) o en equipos de gama baja, recalcular
+  // en cada disparo puede sumar trabajo innecesario. Se agrupa (debounce) para que solo
+  // se recalcule una vez que el usuario deja de escribir/pegar por un instante — las
+  // llamadas directas (carga inicial, botón Limpiar, carga de archivo) siguen instantáneas.
+  let draftStatsDebounceId = null;
+  function scheduleUpdateDraftStats(){
+    clearTimeout(draftStatsDebounceId);
+    draftStatsDebounceId = setTimeout(updateDraftStats, 100);
+  }
+  draftInput.addEventListener('input', scheduleUpdateDraftStats);
   updateDraftStats();
   $('btnLimitUpgrade').addEventListener('click', () => openModal());
 
@@ -1962,7 +1972,7 @@ En la actualidad, cabe destacar que las universidades han comenzado a implementa
     { max: 85,  message: 'Enriqueciendo léxico académico avanzado (perplexity)...' },
     { max: 100, message: 'Verificando tasa de elusión contra detectores (GPTZero / Turnitin)...' }
   ];
-  const PROCESSING_TOTAL_MS = 2800;
+  const PROCESSING_TOTAL_MS = 1400;
   const PROCESSING_TICK_MS = 40;
   const PROCESSING_INCREMENT = 100 / (PROCESSING_TOTAL_MS / PROCESSING_TICK_MS);
 
